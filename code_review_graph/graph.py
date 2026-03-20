@@ -275,12 +275,29 @@ class GraphStore:
         return [r["file_path"] for r in rows]
 
     def search_nodes(self, query: str, limit: int = 20) -> list[GraphNode]:
-        """Simple keyword search across node names."""
-        pattern = f"%{query}%"
-        rows = self._conn.execute(
-            "SELECT * FROM nodes WHERE name LIKE ? OR qualified_name LIKE ? LIMIT ?",
-            (pattern, pattern, limit),
-        ).fetchall()
+        """Keyword search across node names with multi-word AND logic.
+
+        Each word in the query must match independently (case-insensitive)
+        against the node name or qualified name. For example,
+        ``"firebase auth"`` matches ``verify_firebase_token`` and
+        ``FirebaseAuth`` but not ``get_user``.
+        """
+        words = query.lower().split()
+        if not words:
+            return []
+
+        conditions: list[str] = []
+        params: list[str | int] = []
+        for word in words:
+            conditions.append(
+                "(LOWER(name) LIKE ? OR LOWER(qualified_name) LIKE ?)"
+            )
+            params.extend([f"%{word}%", f"%{word}%"])
+
+        where = " AND ".join(conditions)
+        sql = f"SELECT * FROM nodes WHERE {where} LIMIT ?"  # nosec B608
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_node(r) for r in rows]
 
     # --- Impact / Graph traversal ---
