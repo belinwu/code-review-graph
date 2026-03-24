@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .communities import get_architecture_overview, get_communities
-from .embeddings import EmbeddingStore, embed_all_nodes, semantic_search
+from .embeddings import EmbeddingStore, embed_all_nodes
 from .flows import get_affected_flows as _get_affected_flows
 from .flows import get_flow_by_id, get_flows
 from .graph import GraphStore, edge_to_dict, node_to_dict
@@ -36,6 +36,7 @@ from .incremental import (
     get_staged_and_unstaged,
     incremental_update,
 )
+from .search import hybrid_search
 
 # Common JS/TS builtin method names filtered from callers_of results.
 # "Who calls .map()?" returns hundreds of hits and is never useful.
@@ -612,64 +613,34 @@ def semantic_search_nodes(
     kind: str | None = None,
     limit: int = 20,
     repo_root: str | None = None,
+    context_files: list[str] | None = None,
 ) -> dict[str, Any]:
     """Search for nodes by name, keyword, or semantic similarity.
 
-    Uses vector embeddings for semantic search if available (install with
-    `pip install code-review-graph[embeddings]`). Falls back to keyword
-    matching otherwise.
+    Uses hybrid search (FTS5 BM25 + vector embeddings merged via Reciprocal
+    Rank Fusion) as the primary search path, with graceful fallback to
+    keyword matching.
 
     Args:
         query: Search string to match against node names and qualified names.
         kind: Optional filter by node kind (File, Class, Function, Type, Test).
         limit: Maximum results to return (default: 20).
         repo_root: Repository root path. Auto-detected if omitted.
+        context_files: Optional list of file paths. Nodes in these files
+            receive a relevance boost.
 
     Returns:
         Ranked list of matching nodes.
     """
     store, root = _get_store(repo_root)
     try:
-        db_path = get_db_path(root)
-        emb_store = EmbeddingStore(db_path)
-        search_mode = "keyword"
+        results = hybrid_search(
+            store, query, kind=kind, limit=limit, context_files=context_files,
+        )
 
-        try:
-            if emb_store.available and emb_store.count() > 0:
-                # Vector search
-                search_mode = "semantic"
-                raw = semantic_search(query, store, emb_store, limit=limit * 2)
-                if kind:
-                    raw = [r for r in raw if r.get("kind") == kind]
-                raw = raw[:limit]
-                return {
-                    "status": "ok",
-                    "query": query,
-                    "search_mode": search_mode,
-                    "summary": f"Found {len(raw)} node(s) matching '{query}' via semantic search"
-                    + (f" (kind={kind})" if kind else ""),
-                    "results": raw,
-                }
-        finally:
-            emb_store.close()
-
-        # Keyword fallback
-        results = store.search_nodes(query, limit=limit * 2)
-
-        if kind:
-            results = [r for r in results if r.kind == kind]
-
-        def score(node):
-            name_lower = node.name.lower()
-            q_lower = query.lower()
-            if name_lower == q_lower:
-                return 0
-            if name_lower.startswith(q_lower):
-                return 1
-            return 2
-
-        results.sort(key=score)
-        results = results[:limit]
+        search_mode = "hybrid"
+        if not results:
+            search_mode = "keyword"
 
         return {
             "status": "ok",
@@ -678,7 +649,7 @@ def semantic_search_nodes(
             "summary": f"Found {len(results)} node(s) matching '{query}'" + (
                 f" (kind={kind})" if kind else ""
             ),
-            "results": [node_to_dict(r) for r in results],
+            "results": results,
         }
     finally:
         store.close()
