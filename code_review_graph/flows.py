@@ -30,7 +30,7 @@ _FRAMEWORK_DECORATOR_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"click\.(command|group)", re.IGNORECASE),
     re.compile(r"celery\.(task|shared_task)", re.IGNORECASE),
     re.compile(r"api_view", re.IGNORECASE),
-    re.compile(r"action", re.IGNORECASE),
+    re.compile(r"\baction\b", re.IGNORECASE),
     re.compile(r"@(Get|Post|Put|Delete|Patch|RequestMapping)", re.IGNORECASE),
 ]
 
@@ -88,11 +88,10 @@ def detect_entry_points(store: GraphStore) -> list[GraphNode]:
     3. Matches a conventional name pattern (``main``, ``test_*``, etc.).
     """
     # Build a set of all qualified names that are CALLS targets.
-    all_edges = store.get_all_edges()
-    called_qnames: set[str] = set()
-    for edge in all_edges:
-        if edge.kind == "CALLS":
-            called_qnames.add(edge.target_qualified)
+    rows = store._conn.execute(
+        "SELECT DISTINCT target_qualified FROM edges WHERE kind = 'CALLS'"
+    ).fetchall()
+    called_qnames = {row["target_qualified"] for row in rows}
 
     # Scan all nodes for entry-point candidates.
     rows = store._conn.execute(
